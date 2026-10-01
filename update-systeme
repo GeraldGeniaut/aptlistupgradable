@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# check-apt-updates.sh — signale les MAJ disponibles par mail
+set -uo pipefail
+
+HOST="$(hostname -s)"
+FROM="${HOST}@domaine.ext"
+TO="destinataire@domaine.ext"
+RELAY="smtp://monrelay.domaine.ext:25"
+
+[[ $EUID -eq 0 ]] || { echo "À lancer en root" >&2; exit 1; }
+
+send_mail() {
+    local subject="$1" body="$2"
+    {
+        printf 'From: %s\r\n' "$FROM"
+        printf 'To: %s\r\n' "$TO"
+        printf 'Subject: %s\r\n' "$subject"
+        printf 'Date: %s\r\n' "$(LC_ALL=C date -R)"
+        printf 'Message-ID: <%s.%s@%s>\r\n' "$(date +%s)" "$$" "$HOST"
+        printf 'MIME-Version: 1.0\r\n'
+        printf 'Content-Type: text/plain; charset=UTF-8\r\n'
+        printf 'Content-Transfer-Encoding: 8bit\r\n\r\n'
+        printf '%s\n' "$body"
+    } | curl -s --url "$RELAY" --mail-from "$FROM" --mail-rcpt "$TO" --upload-file -
+}
+
+# 1. apt update (apt-get car l'interface de "apt" n'est pas stable en script)
+if ! UPDATE_OUT="$(LC_ALL=C apt-get update -qq 2>&1)"; then
+    send_mail "[ERREUR APT] ${HOST}" "apt-get update a échoué :"$'\n\n'"${UPDATE_OUT}"
+    exit 2
+fi
+
+# 2. Liste des paquets upgradables (on retire la ligne d'en-tête "Listing...")
+UPGRADABLE="$(LC_ALL=C apt list --upgradable 2>/dev/null | tail -n +2)"
+
+# 3. Rien à faire → on sort sans mail
+[[ -z "$UPGRADABLE" ]] && exit 0
+
+COUNT="$(wc -l <<< "$UPGRADABLE")"
+SECU="$(grep -c -- '-security' <<< "$UPGRADABLE" || true)"
+
+BODY="${COUNT} mise(s) à jour disponible(s) sur ${HOST}, dont ${SECU} de sécurité.
+
+${UPGRADABLE}"
+
+send_mail "[MAJ DISPOS] sur ${HOST}" "$BODY"
